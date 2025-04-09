@@ -20,7 +20,6 @@ decorator==5.2.1
 etelemetry==0.3.1
 executing==2.2.0
 filelock==3.18.0
-fitz==0.0.1.dev2
 fonttools==4.57.0
 fsspec==2025.3.2
 greenlet==3.1.1
