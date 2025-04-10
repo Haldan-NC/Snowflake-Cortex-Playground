@@ -3,7 +3,7 @@ CREATE SCHEMA IF NOT EXISTS PUBLIC;
 
 
 -- Creating the stage
-create or replace stag  e docs ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY = ( ENABLE = true );
+create or replace stage docs ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE') DIRECTORY = ( ENABLE = true );
 
 
 -- Uploading the documents using the drag and drop GUI function (DO THIS MANUALLY)
