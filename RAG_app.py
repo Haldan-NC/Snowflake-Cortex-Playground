@@ -73,6 +73,7 @@ def generate_promt_for_openai_api(instructions, input_text, open_ai_client):
 
 def extract_json_from_llm_output(llm_output_text):
     """
+    DEPRICATED. 
     Extracts the first JSON object from raw LLM output text and returns it as a dictionary.
 
     Assumptions:
@@ -88,26 +89,47 @@ def extract_json_from_llm_output(llm_output_text):
     Raises:
         ValueError: If JSON cannot be parsed.
     """
+    raise DeprecationWarning("This function is deprecated. Code remains for reference and future debugging.")
+    # try:
+    #     # Locate the first '{' and the last '}'
+    #     start_idx = llm_output_text.find("{")
+    #     end_idx = llm_output_text.rfind("}") + 1
+
+    #     if start_idx == -1 or end_idx == -1:
+    #         raise ValueError("No JSON object found in the output text.")
+
+    #     json_text = llm_output_text[start_idx:end_idx]
+
+    #     # Parse the JSON string
+    #     parsed_dict = json.loads(json_text)
+
+    #     if not isinstance(parsed_dict, dict):
+    #         raise ValueError("Extracted JSON is not a dictionary.")
+
+    #     return parsed_dict
+
+    # except Exception as e:
+    #     raise ValueError(f"Failed to parse JSON from LLM output: {e}")
+
+
+def extract_json_from_llm_output(llm_output_text: str) -> dict:
     try:
-        # Locate the first '{' and the last '}'
-        start_idx = llm_output_text.find("{")
-        end_idx = llm_output_text.rfind("}") + 1
+        # Look for a code block marked with ```json ... ```
+        match = re.search(r"```json\s*(\{.*?\})\s*```", llm_output_text, re.DOTALL)
+        if not match:
+            raise ValueError("No JSON code block found in the text.")
 
-        if start_idx == -1 or end_idx == -1:
-            raise ValueError("No JSON object found in the output text.")
+        raw_json = match.group(1)
 
-        json_text = llm_output_text[start_idx:end_idx]
+        # Optional: Remove trailing commas which are invalid in JSON
+        cleaned_json = re.sub(r",\s*([\]}])", r"\1", raw_json)
 
-        # Parse the JSON string
-        parsed_dict = json.loads(json_text)
-
-        if not isinstance(parsed_dict, dict):
-            raise ValueError("Extracted JSON is not a dictionary.")
-
-        return parsed_dict
+        parsed = json.loads(cleaned_json)
+        return parsed
 
     except Exception as e:
-        raise ValueError(f"Failed to parse JSON from LLM output: {e}")
+        print("Failed to extract JSON:", e)
+        return {}
 
 
 
@@ -220,7 +242,6 @@ def find_document_by_machine_name(cursor, machine_name):
             best_match = {"DOCUMENT_NAME": doc_name, "DOCUMENT_ID": row["DOCUMENT_ID"]}
     
     return best_match
-
 
 
 def main_RAG_pipeline(cursor, open_ai_api_key, database, schema, user_query):
