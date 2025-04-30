@@ -33,9 +33,18 @@ def log(message: str) -> None:
     """
     Logs a message to the console. Wrapper function made for easy modification in the future.
     """
-    if VERBOSE:
+    if VERBOSE > 0:
         cur_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f" {cur_datetime}  [LOG]  {message}")
+
+def log2(message: str) -> None:
+    """
+    Logs a message to the console. Wrapper function made for easy modification in the future.
+    """
+    if VERBOSE == 2:
+        cur_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f" {cur_datetime}  [LOG]  {message}")
+
 
 
 def convert_relevant_path_to_absolute_path(relative_path: str) -> str:
@@ -359,11 +368,11 @@ def populate_image_descriptions(images_df: pd.DataFrame, open_ai_client: OpenAI,
 
         # Call OpenAI API to generate a description for the image
         description_response = call_openai_api_for_image_description(file_location, prompt, open_ai_client)
-        log(f"Generated description for image ID {image_id} {file_location}: {description_response}")
+        log2(f"Generated description for image ID:{image_id} {file_location}: {description_response}")
 
         # Store the generated description in the DataFrame
         images_df.at[idx, "DESCRIPTION"] = description_response
-        log(f"Updated image ID {image_id} with new description:  {description_response}")
+        log(f"Updated IMAGE table for image ID:{image_id} with new description")
 
         # Update the database with the new description
         update_sql = f"""
@@ -473,15 +482,15 @@ def add_image_references_to_guide(guide_text: str, filtered_task_chunk_df: pd.Da
 
 
 
-def main_RAG_pipeline(user_query: str, machine_name: str = "N/A" , verbose:bool = True) -> str:
+def main_RAG_pipeline(user_query: str, machine_name: str = "N/A" , verbose:int = 1) -> str:
     global VERBOSE
-    VERBOSE = True
+    VERBOSE = 1
 
     if verbose:
         log("Verbose mode is ON.")
     else:
         log("Verbose mode is OFF.")
-        VERBOSE = False
+        VERBOSE = 0
 
     # Establishing connections to OpenAI and Snowflake (Windows Credential Manager is used to store credentials)
     cursor = get_snowflake_connection()
@@ -529,10 +538,10 @@ def main_RAG_pipeline(user_query: str, machine_name: str = "N/A" , verbose:bool 
     instructions_3, reference_text_3 = create_step_by_step_prompt(filtered_task_chunk_df, task)
 
     log("Calling for Response 3: Constructing a step by step guide using the relevant chunks...")
-    log("\nReference text:")
-    log(reference_text_3)
-    log("\nInstructions:")
-    log(instructions_3)
+    log2("\nReference text:")
+    log2(reference_text_3)
+    log2("\nInstructions:")
+    log2(instructions_3)
     log("\nCalling OpenAI API for Response 3...")
     response_3 = generate_promt_for_openai_api(
         instructions=instructions_3, 
@@ -540,8 +549,8 @@ def main_RAG_pipeline(user_query: str, machine_name: str = "N/A" , verbose:bool 
         open_ai_client = client
         ).output_text
 
-    log("Response 3:")
-    log(response_3)
+    log2("Response 3:")
+    log2(response_3)
 
     log("Calling for Response 4: Adding image references to the guide...")
     response_4 = add_image_references_to_guide(response_3, filtered_task_chunk_df, client, cursor)
