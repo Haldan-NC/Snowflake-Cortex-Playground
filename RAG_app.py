@@ -29,7 +29,7 @@ import base64
 from datetime import datetime
 
 
-def log(message):
+def log(message: str) -> None:
     """
     Logs a message to the console. Wrapper function made for easy modification in the future.
     """
@@ -38,7 +38,7 @@ def log(message):
         print(f" {cur_datetime}  [LOG]  {message}")
 
 
-def convert_relevant_path_to_absolute_path(relative_path):
+def convert_relevant_path_to_absolute_path(relative_path: str) -> str:
     """
     Converts a relative path to an absolute path.
     """
@@ -48,7 +48,13 @@ def convert_relevant_path_to_absolute_path(relative_path):
     return absolute_path
 
 
-def get_openai_api_key():
+def get_openai_api_key() -> str:
+    """
+    Retrieves the OpenAI API key from the Windows Credential Manager using the keyring library.
+    The credentials are stored under the following keys:
+    - openai api: api_key
+    """
+
     try:
         open_ai_api_key = keyring.get_password("openai api", "api_key")
         if open_ai_api_key is None:
@@ -59,7 +65,16 @@ def get_openai_api_key():
     return open_ai_api_key
 
 
-def get_snowflake_connection():
+def get_snowflake_connection() -> sf_connector.cursor:
+    """
+    Establishes a connection to Snowflake from the Windows Credential Manager using the keyring library.
+    The credentials are stored under the following keys:
+    - NC_Snowflake_Trial_Account_Name
+    - NC_Snowflake_Trial_User_Name
+    - NC_Snowflake_Trial_User_Password
+
+    The function returns a Snowflake cursor object for executing SQL queries.
+    """
     account_identifier = keyring.get_password('NC_Snowflake_Trial_Account_Name', 'account_identifier')
     user_name = keyring.get_password('NC_Snowflake_Trial_User_Name', "user_name")
     password  = keyring.get_password('NC_Snowflake_Trial_User_Password', user_name)
@@ -89,7 +104,7 @@ def get_snowflake_connection():
         raise(f"Error connecting to Snowflake: {e}")
 
 
-def generate_promt_for_openai_api(instructions, input_text, open_ai_client):
+def generate_promt_for_openai_api(instructions, input_text, open_ai_client) -> str:
     response = open_ai_client.responses.create(
         model="gpt-4o",
         instructions= instructions,
@@ -119,7 +134,7 @@ def extract_json_from_llm_output(llm_output_text: str) -> dict:
         return {}
 
 
-def vector_embedding_cosine_similarity_search(input_text, cursor, chunk_size: str = "small"):
+def vector_embedding_cosine_similarity_search(input_text: str, cursor: sf_connector.cursor, chunk_size: str = "small") -> pd.DataFrame:
     """
     chunk_size: str = "small" or "large" - refers to the database table to search in.
     Searches for similar chunks based on cosine similarity.
@@ -157,7 +172,7 @@ def vector_embedding_cosine_similarity_search(input_text, cursor, chunk_size: st
     return return_df
 
 
-def vector_embedding_cosine_similarity_between_texts(text1, text2, cursor):
+def vector_embedding_cosine_similarity_between_texts(text1: str, text2: str, cursor: sf_connector.cursor) -> float:
     """
     Computes cosine similarity between two input texts using Snowflake Arctic Embedding.
 
@@ -187,7 +202,7 @@ def vector_embedding_cosine_similarity_between_texts(text1, text2, cursor):
 
 
 
-def find_document_by_machine_name(cursor, machine_name):
+def find_document_by_machine_name(cursor : sf_connector.cursor, machine_name: str) -> dict:
     """
     Attempts to find a document by machine name using the DOCUMENTS table.
     NOTE: THIS FUNCTION SHOULD BE REPLACED BY A BETTER FUNCTION THAT FIND MACHINE NAMES USING METADATA.
@@ -230,7 +245,7 @@ def find_document_by_machine_name(cursor, machine_name):
     return best_match
 
 
-def narrow_down_relevant_chunks(task_chunk_df, document_info):
+def narrow_down_relevant_chunks(task_chunk_df: pd.DataFrame, document_info: dict) -> pd.DataFrame:
     filtered_task_chunk_df = task_chunk_df[task_chunk_df['DOCUMENT_ID'] == document_info['DOCUMENT_ID']]
     filtered_task_chunk_df = filtered_task_chunk_df.sort_values(by='CHUNK_ORDER', ascending=True)
     filtered_task_chunk_df = filtered_task_chunk_df.head(10)
@@ -238,7 +253,7 @@ def narrow_down_relevant_chunks(task_chunk_df, document_info):
     return filtered_task_chunk_df
 
 
-def create_step_by_step_prompt(relevant_chunks_df, user_task):
+def create_step_by_step_prompt(relevant_chunks_df: pd.DataFrame, user_task: str) -> str:
     """
     Builds a prompt asking the LLM to create a step-by-step guide based on relevant chunks.
     
@@ -275,7 +290,7 @@ def create_step_by_step_prompt(relevant_chunks_df, user_task):
     return instructions, reference_text
 
 
-def call_openai_api_for_image_description(file_path, prompt, openai_client):
+def call_openai_api_for_image_description(file_path: str, prompt: str, client: OpenAI) -> str:
     """
     Calls OpenAI API to generate a description for the image using the provided context string.
 
@@ -306,7 +321,7 @@ def call_openai_api_for_image_description(file_path, prompt, openai_client):
     return response.output_text
 
 
-def populate_image_descriptions(images_df, open_ai_client, cursor):
+def populate_image_descriptions(images_df: pd.DataFrame, open_ai_client: OpenAI, cursor: sf_connector.cursor) -> pd.DataFrame:
 
     # Iterate through each image and generate a description using OpenAI API
         # For each iteration, context of the image is required. I will use all small chunks of the page of the image, and the image itself.
@@ -362,7 +377,7 @@ def populate_image_descriptions(images_df, open_ai_client, cursor):
     return images_df
 
 
-def pick_image_based_of_descriptions(image_candidates, step_text, open_ai_client):
+def pick_image_based_of_descriptions(image_candidates: pd.DataFrame, step_text: str, open_ai_client: OpenAI) -> str:
     image_options_text = ""
     for _, image_row in image_candidates.iterrows():
         image_id = image_row["IMAGE_ID"]
@@ -385,7 +400,7 @@ def pick_image_based_of_descriptions(image_candidates, step_text, open_ai_client
     return response.output_text
 
 
-def create_image_string_descriptors(image_candidates):
+def create_image_string_descriptors(image_candidates: pd.DataFrame) -> str:
     """
     Creates a string descriptor for each image candidate.
 
@@ -409,7 +424,7 @@ def create_image_string_descriptors(image_candidates):
 
 
 
-def add_image_references_to_guide(guide_text, filtered_task_chunk_df, open_ai_client, cursor):
+def add_image_references_to_guide(guide_text: str, filtered_task_chunk_df: pd.DataFrame, open_ai_client: OpenAI, cursor: sf_connector.cursor) -> str:
     """
     Inserts image references into a step-by-step guide based on LLM-evaluated image descriptions.
 
@@ -458,7 +473,7 @@ def add_image_references_to_guide(guide_text, filtered_task_chunk_df, open_ai_cl
 
 
 
-def main_RAG_pipeline(user_query, machine_name = "N/A" , verbose = True):
+def main_RAG_pipeline(user_query: str, machine_name: str = "N/A" , verbose:bool = True) -> str:
     global VERBOSE
     VERBOSE = True
 
@@ -532,6 +547,8 @@ def main_RAG_pipeline(user_query, machine_name = "N/A" , verbose = True):
     response_4 = add_image_references_to_guide(response_3, filtered_task_chunk_df, client, cursor)
     log("Response 4:")
     log(response_4)
+
+    return response_4
 
 
 if __name__ == "__main__":
