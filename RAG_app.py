@@ -4,11 +4,13 @@ import matplotlib.pyplot as plt
 import keyring
 import os 
 import snowflake.connector as sf_connector # ( https://docs.snowflake.com/en/developer-guide/python-connector/python-connector-connect)
+from snowflake.connector.pandas_tools import write_pandas # (https://docs.snowflake.com/en/developer-guide/python-connector/python-connector-api#write_pandas)
 import pdfplumber
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PDFPlumberLoader
 from langchain.evaluation import load_evaluator
 from collections import defaultdict
+
 
 import numpy as np
 from tqdm import tqdm
@@ -18,9 +20,12 @@ import json
 
 from io import BytesIO
 import fitz 
+from shapely.geometry import box
+from shapely.ops import unary_union
 from PIL import Image, ImageDraw
 import cv2
 from openai import OpenAI
+import base64
 from datetime import datetime
 
 
@@ -28,8 +33,19 @@ def log(message):
     """
     Logs a message to the console. Wrapper function made for easy modification in the future.
     """
-    cur_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f" {cur_datetime}  [LOG]  {message}")
+    if VERBOSE:
+        cur_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f" {cur_datetime}  [LOG]  {message}")
+
+
+def convert_relevant_path_to_absolute_path(relative_path):
+    """
+    Converts a relative path to an absolute path.
+    """
+    current_directory = os.getcwd()
+    absolute_path = os.path.join(current_directory, relative_path)
+    
+    return absolute_path
 
 
 def get_openai_api_key():
@@ -44,6 +60,12 @@ def get_openai_api_key():
 
 
 def get_snowflake_connection(account_identifier, user_name, password, database, schema):
+    log("Connecting to Snowflake with")
+    log(f"Account: {account_identifier}")
+    log(f"User: {user_name}")
+    log(f"Database: {database}")
+    log(f"Schema: {schema}")
+    log("")
     try:
         conn = sf_connector.connect(
             account=account_identifier,
@@ -71,47 +93,6 @@ def generate_promt_for_openai_api(instructions, input_text, open_ai_client):
     return response
 
 
-def extract_json_from_llm_output(llm_output_text):
-    """
-    DEPRICATED. 
-    Extracts the first JSON object from raw LLM output text and returns it as a dictionary.
-
-    Assumptions:
-    - The JSON is flat (non-nested).
-    - The JSON block is enclosed by the first '{' and the last '}'.
-
-    Args:
-        llm_output_text (str): Raw output text from LLM.
-
-    Returns:
-        dict: Parsed dictionary from JSON content.
-
-    Raises:
-        ValueError: If JSON cannot be parsed.
-    """
-    raise DeprecationWarning("This function is deprecated. Code remains for reference and future debugging.")
-    # try:
-    #     # Locate the first '{' and the last '}'
-    #     start_idx = llm_output_text.find("{")
-    #     end_idx = llm_output_text.rfind("}") + 1
-
-    #     if start_idx == -1 or end_idx == -1:
-    #         raise ValueError("No JSON object found in the output text.")
-
-    #     json_text = llm_output_text[start_idx:end_idx]
-
-    #     # Parse the JSON string
-    #     parsed_dict = json.loads(json_text)
-
-    #     if not isinstance(parsed_dict, dict):
-    #         raise ValueError("Extracted JSON is not a dictionary.")
-
-    #     return parsed_dict
-
-    # except Exception as e:
-    #     raise ValueError(f"Failed to parse JSON from LLM output: {e}")
-
-
 def extract_json_from_llm_output(llm_output_text: str) -> dict:
     try:
         # Look for a code block marked with ```json ... ```
@@ -130,7 +111,6 @@ def extract_json_from_llm_output(llm_output_text: str) -> dict:
     except Exception as e:
         print("Failed to extract JSON:", e)
         return {}
-
 
 
 def vector_embedding_cosine_similarity_search(input_text, cursor, chunk_size: str = "small"):
@@ -156,12 +136,12 @@ def vector_embedding_cosine_similarity_search(input_text, cursor, chunk_size: st
             chunk_id,
             CHUNK_ORDER,
             PAGE_START_NUMBER,
-            PAGE_END_NUMBER
+            PAGE_END_NUMBER,
             chunk_text,
             VECTOR_COSINE_SIMILARITY({table_name}.EMBEDDING, input.VECTOR) AS COSINE_SIMILARITY
         FROM {table_name}, input
         ORDER BY COSINE_SIMILARITY DESC
-        LIMIT 50
+        LIMIT 100
     """
 
     # Important: pass input_text as a parameter, NOT interpolated directly
@@ -244,8 +224,254 @@ def find_document_by_machine_name(cursor, machine_name):
     return best_match
 
 
-def main_RAG_pipeline(cursor, open_ai_api_key, database, schema, user_query):
-    client = OpenAI(api_key = open_ai_api_key)
+def narrow_down_relevant_chunks(task_chunk_df, document_info):
+    filtered_task_chunk_df = task_chunk_df[task_chunk_df['DOCUMENT_ID'] == document_info['DOCUMENT_ID']]
+    filtered_task_chunk_df = filtered_task_chunk_df.sort_values(by='CHUNK_ORDER', ascending=True)
+    filtered_task_chunk_df = filtered_task_chunk_df.head(10)
+
+    return filtered_task_chunk_df
+
+
+def create_step_by_step_prompt(relevant_chunks_df, user_task):
+    """
+    Builds a prompt asking the LLM to create a step-by-step guide based on relevant chunks.
+    
+    Args:
+        relevant_chunks_df (pd.DataFrame): DataFrame of retrieved relevant chunks.
+        user_task (str): The original user query (e.g., "How do I clean the filter?")
+    
+    Returns:
+        str: Prompt ready for LLM completion
+    """
+
+    reference_text = ""
+    for i, row in relevant_chunks_df.iterrows():
+        page_info = f"(page {row['PAGE_START_NUMBER']})" if 'PAGE_START_NUMBER' in row else ""
+        reference_text += f"- [Relevance: {row['COSINE_SIMILARITY']}]: {row['CHUNK_TEXT']}  {page_info}\n\n"
+        # Section info could also be included in the prompt if needed.
+
+    instructions = f"""
+    You are tasked with writing a clear, cohearent step-by-step guide for a user based on the provided reference content and the task.
+
+    The user wants help with the following task:
+    "{user_task}"
+
+    Use only the information provided in the reference content below.
+    If any step is ambiguous or missing, note that politely rather than guessing.
+    """
+
+    reference_text = f"""
+    ### Reference Content:
+    {reference_text}
+
+    ### Step-by-Step Guide:
+    """
+    return instructions, reference_text
+
+
+def call_openai_api_for_image_description(file_path, prompt, openai_client):
+    """
+    Calls OpenAI API to generate a description for the image using the provided context string.
+
+    Args:
+        file_uri (str): URI of the image file.
+        context_string (str): Context string for the image.
+
+    Returns:
+        str: Generated description for the image.
+    """
+
+    with open(file_path, "rb") as image_file:
+        b64_image = base64.b64encode(image_file.read()).decode("utf-8")
+
+    response = client.responses.create(
+        model="gpt-4o-mini",
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text":  prompt},
+                    {"type": "input_image", "image_url": f"data:image/png;base64,{b64_image}"}
+                ],
+            }
+        ],
+    )
+
+    return response.output_text
+
+
+def populate_image_descriptions(images_df, open_ai_client, cursor):
+
+    # Iterate through each image and generate a description using OpenAI API
+        # For each iteration, context of the image is required. I will use all small chunks of the page of the image, and the image itself.
+    for idx, row in images_df.iterrows():
+        if len(row["DESCRIPTION"]) > 0:
+            log(f"Image ID {row['IMAGE_ID']} already has a description. Skipping...")
+            continue # Skip if description already exists
+        log(f"Generating description for image ID {row['IMAGE_ID']}...")
+
+        file_location = row["IMAGE_PATH"]
+        page_number = row["PAGE"]
+        section_id = row["SECTION_ID"]
+        document_id = row["DOCUMENT_ID"]
+        image_id = row["IMAGE_ID"]
+
+        sql = f"""
+        SELECT * 
+        FROM CHUNKS_SMALL 
+        WHERE PAGE_START_NUMBER = %s AND DOCUMENT_ID = %s
+        """
+
+        # Important: pass input_text as a parameter, NOT interpolated directly
+        cursor.execute(sql, (page_number,document_id,))
+        local_small_chunks = cursor.fetch_pandas_all()
+
+        # Create a context string from the relevant chunks
+        context_string = "\n".join(local_small_chunks["CHUNK_TEXT"].tolist())
+        prompt = f"""
+            This image was extracted from the same page as the context string which is concatenated at the end of this string. 
+            Please describe the image in detail, including any relevant information that can be inferred from the context.
+
+            CONTEXT:
+            {context_string}
+            """
+
+        # Call OpenAI API to generate a description for the image
+        description_response = call_openai_api_for_image_description(file_location, prompt, open_ai_client)
+        log(f"Generated description for image ID {image_id} {file_location}: {description_response}")
+
+        # Store the generated description in the DataFrame
+        images_df.at[idx, "DESCRIPTION"] = description_response
+        log(f"Updated image ID {image_id} with new description:  {description_response}")
+
+        # Update the database with the new description
+        update_sql = f"""
+        UPDATE IMAGES
+        SET DESCRIPTION = %s
+        WHERE IMAGE_ID = %s
+        """
+        cursor.execute(update_sql, (description_response, image_id))
+        cursor.connection.commit()
+
+    return images_df
+
+
+def pick_image_based_of_descriptions(image_candidates, step_text, open_ai_client):
+    image_options_text = ""
+    for _, image_row in image_candidates.iterrows():
+        image_id = image_row["IMAGE_ID"]
+        image_path = image_row["IMAGE_PATH"]
+        description = image_row["DESCRIPTION"]
+        image_options_text += f"- Image ID: {image_id}, Path: {image_path}, Description: {description}\n"
+
+    instructions = f"""
+    You are tasked with modifying the task in a step by step guide. You will append the most relevant image reference to the step,
+    by selecting the most relevant image for the following step in a guide:
+    "{step_text}"
+    """
+
+    reference_text = f"""
+    ### Image Options:
+    {image_options_text}
+    """
+
+    response = generate_promt_for_openai_api(instructions, input_text, open_ai_client)
+    return response.output_text
+
+
+def create_image_string_descriptors(image_candidates):
+    """
+    Creates a string descriptor for each image candidate.
+
+    Args:
+        image_candidates (pd.DataFrame): DataFrame containing image candidates.
+
+    Returns:
+        list: List of string descriptors for each image candidate.
+    """
+    image_descriptors = "### Below are the image candidates:\n\n"
+    for _, row in image_candidates.iterrows():
+        image_id = row["IMAGE_ID"]
+        image_path = row["IMAGE_PATH"]
+        description = row["DESCRIPTION"]
+        page_number = row["PAGE"]
+        # image_position = f"X1: {row["IMAGE_X1"]} Y1: {row["IMAGE_Y1"]} X2: {row["IMAGE_X2"]} Y2: {row["IMAGE_Y2"]}"
+
+        image_descriptors += f"IMAGE_ID: {image_id}, PATH: {image_path}, \n Description:\n {description} \n"
+    
+    return image_descriptors
+
+
+
+def add_image_references_to_guide(guide_text, filtered_task_chunk_df, open_ai_client, cursor):
+    """
+    Inserts image references into a step-by-step guide based on LLM-evaluated image descriptions.
+
+    Args:
+        guide_text (str): Step-by-step markdown text.
+        filtered_task_chunk_df (pd.DataFrame): Chunks used to build the guide.
+        open_ai_client (OpenAI): Authenticated OpenAI client.
+        cursor: Snowflake cursor.
+
+    Returns:
+        str: Guide text with images inserted into appropriate steps.
+    """
+    
+    # Populate all images with descriptions on the pages where the relevant chunks are located.
+    relevant_pages = filtered_task_chunk_df["PAGE_START_NUMBER"].unique()
+    document_id = int(filtered_task_chunk_df["DOCUMENT_ID"].iloc[0]) # Assumes that only 1 document is relevant for the task.
+
+    sql = f"""
+        SELECT * 
+        FROM IMAGES 
+        WHERE PAGE IN ({','.join(map(str, relevant_pages))})
+        AND DOCUMENT_ID = %s
+    """
+    cursor.execute(sql, (document_id,))
+    images_df = cursor.fetch_pandas_all()
+
+    log("Populating image descriptions if they don't exist...")
+    images_df = populate_image_descriptions(images_df, open_ai_client, cursor)
+
+    image_descriptors = create_image_string_descriptors(images_df)
+    user_query = f"{guide_text} \n \n {image_descriptors}"
+    log("Calling OpenAI API to add image references to the guide...")
+
+    response_1 = generate_promt_for_openai_api(
+        instructions="""
+        You are are tasked to modify the step by step guide below, and include the most relevant images.
+        You should only include images IFF they are relevant to the step.
+        The way you will do this is by adding the IMAGE_ID and PATH to the step.
+        The input_text will include a long description of each candidate image, and the step by step guide.
+        """, 
+        input_text = user_query, 
+        open_ai_client = open_ai_client
+        )
+
+    return response_1.output_text
+
+
+
+def main_RAG_pipeline(user_query, verbose = True):
+    global VERBOSE
+    VERBOSE = True
+
+    if verbose:
+        log("Verbose mode is ON.")
+    else:
+        log("Verbose mode is OFF.")
+        VERBOSE = False
+
+    account_identifier = keyring.get_password('NC_Snowflake_Trial_Account_Name', 'account_identifier')
+    user_name = keyring.get_password('NC_Snowflake_Trial_User_Name', "user_name")
+    password  = keyring.get_password('NC_Snowflake_Trial_User_Password', user_name)
+    database  = "WASHING_MACHINE_MANUALS"
+    schema = "PUBLIC"
+    cursor = get_snowflake_connection(account_identifier, user_name, password, database, schema)
+
+    # Using OpenAI API GPT-4o
+    open_ai_api_key = get_openai_api_key() 
+    client = OpenAI(api_key = open_ai_api_key)    
 
     log("Starting RAG pipeline...")
     log(f"User query: {user_query}")
@@ -277,32 +503,39 @@ def main_RAG_pipeline(cursor, open_ai_api_key, database, schema, user_query):
     log("Calling for Response 2: Finding most relevant chunks of data to solve the task...")
     task_chunk_df = vector_embedding_cosine_similarity_search(input_text = task, cursor = cursor, chunk_size = "small")
 
-    print(task_chunk_df.head(10))
-    print("\n")
+    # Filtering the task_chunk_df to only include chunks related to the found document
+    log(f"Pre - Filtered task chunk dataframe: {len(task_chunk_df)}")
+    filtered_task_chunk_df = narrow_down_relevant_chunks(task_chunk_df, document_info)
+    log(f"Post - Filtered task chunk dataframe: {len(filtered_task_chunk_df)}")
 
-    filtered_task_chunk_df = task_chunk_df[task_chunk_df['DOCUMENT_ID'] == document_info['DOCUMENT_ID']]
-    print(filtered_task_chunk_df.head(10))
-    
+    # Retrieve a step by step response from the LLM using the relevant chunks
+    instructions_3, reference_text_3 = create_step_by_step_prompt(filtered_task_chunk_df, task)
+
+    log("Calling for Response 3: Constructing a step by step guide using the relevant chunks...")
+    log("\nReference text:")
+    log(reference_text_3)
+    log("\nInstructions:")
+    log(instructions_3)
+    log("\nCalling OpenAI API for Response 3...")
+    response_3 = generate_promt_for_openai_api(
+        instructions=instructions_3, 
+        input_text = reference_text_3, 
+        open_ai_client = client
+        ).output_text
+
+    log("Response 3:")
+    log(response_3)
+
+    log("Calling for Response 4: Adding image references to the guide...")
+    response_4 = add_image_references_to_guide(response_3, filtered_task_chunk_df, client, cursor)
+    log("Response 4:")
+    log(response_4)
 
 
 if __name__ == "__main__":
 
-    VERBOSE = True
-    if VERBOSE:
-        log("Verbose mode is ON.")
+    # Example usage
     machine_name = "WGA1420SIN"
     user_query = f"There is often detergent residues on the laundry when i do a fine wash cycle. My washing machine model is {machine_name}. How can I fix this?" 
 
-    account_identifier = keyring.get_password('NC_Snowflake_Trial_Account_Name', 'account_identifier')
-    user_name = "EMHALDEMO1" # Change this to your Snowflake user name
-    password = keyring.get_password('NC_Snowflake_Trial_User_Password', user_name)
-    database = "WASHING_MACHINE_MANUALS"
-    schema = "PUBLIC"
-
-    cursor = get_snowflake_connection(account_identifier, user_name, password, database, schema)
-
-    # Using OpenAI API GPT-4o
-    open_ai_api_key = get_openai_api_key() 
-    client = OpenAI(api_key = open_ai_api_key)    
-
-    main_RAG_pipeline(cursor, open_ai_api_key, database, schema, user_query)
+    main_RAG_pipeline(user_query)
