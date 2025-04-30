@@ -59,7 +59,13 @@ def get_openai_api_key():
     return open_ai_api_key
 
 
-def get_snowflake_connection(account_identifier, user_name, password, database, schema):
+def get_snowflake_connection():
+    account_identifier = keyring.get_password('NC_Snowflake_Trial_Account_Name', 'account_identifier')
+    user_name = keyring.get_password('NC_Snowflake_Trial_User_Name', "user_name")
+    password  = keyring.get_password('NC_Snowflake_Trial_User_Password', user_name)
+    database  = "WASHING_MACHINE_MANUALS"
+    schema = "PUBLIC"
+
     log("Connecting to Snowflake with")
     log(f"Account: {account_identifier}")
     log(f"User: {user_name}")
@@ -452,7 +458,7 @@ def add_image_references_to_guide(guide_text, filtered_task_chunk_df, open_ai_cl
 
 
 
-def main_RAG_pipeline(user_query, verbose = True):
+def main_RAG_pipeline(user_query, machine_name = "N/A" , verbose = True):
     global VERBOSE
     VERBOSE = True
 
@@ -462,14 +468,8 @@ def main_RAG_pipeline(user_query, verbose = True):
         log("Verbose mode is OFF.")
         VERBOSE = False
 
-    account_identifier = keyring.get_password('NC_Snowflake_Trial_Account_Name', 'account_identifier')
-    user_name = keyring.get_password('NC_Snowflake_Trial_User_Name', "user_name")
-    password  = keyring.get_password('NC_Snowflake_Trial_User_Password', user_name)
-    database  = "WASHING_MACHINE_MANUALS"
-    schema = "PUBLIC"
-    cursor = get_snowflake_connection(account_identifier, user_name, password, database, schema)
-
-    # Using OpenAI API GPT-4o
+    # Establishing connections to OpenAI and Snowflake (Windows Credential Manager is used to store credentials)
+    cursor = get_snowflake_connection()
     open_ai_api_key = get_openai_api_key() 
     client = OpenAI(api_key = open_ai_api_key)    
 
@@ -477,10 +477,12 @@ def main_RAG_pipeline(user_query, verbose = True):
     log(f"User query: {user_query}")
     log("Calling for Response 1: Extracting machine name and task...")
     response_1 = generate_promt_for_openai_api(
-        instructions="""
+        instructions=f"""
         Extract from the following user query:
-        1. The machine name or type. Let the key be "machine_name".
+        1. The machine name or type. Let the key be "machine_name". If the user defined machine name is not "N/A", use that.
         2. A one-sentence description of the task. Let the key be "task".
+
+        User defined machine name: {machine_name}
 
         Return as JSON.
         User query: 
@@ -534,8 +536,9 @@ def main_RAG_pipeline(user_query, verbose = True):
 
 if __name__ == "__main__":
 
-    # Example usage
+    
     machine_name = "WGA1420SIN"
     user_query = f"There is often detergent residues on the laundry when i do a fine wash cycle. My washing machine model is {machine_name}. How can I fix this?" 
 
-    main_RAG_pipeline(user_query)
+    main_RAG_pipeline(user_query, machine_name)
+
