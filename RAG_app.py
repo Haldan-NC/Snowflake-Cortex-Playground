@@ -443,7 +443,7 @@ def add_image_references_to_guide(guide_text, filtered_task_chunk_df, open_ai_cl
     user_query = f"{guide_text} \n \n {image_descriptors}"
     log("Calling OpenAI API to add image references to the guide...")
 
-    response_1 = generate_promt_for_openai_api(
+    response = generate_promt_for_openai_api(
         instructions="""
         You are are tasked to modify the step by step guide below, and include the most relevant images.
         You should only include images IFF they are relevant to the step.
@@ -454,7 +454,7 @@ def add_image_references_to_guide(guide_text, filtered_task_chunk_df, open_ai_cl
         open_ai_client = open_ai_client
         )
 
-    return response_1.output_text
+    return response.output_text
 
 
 
